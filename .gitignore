@@ -23,11 +23,5 @@ Homestead.json
 Homestead.yaml
 Thumbs.db
 
-/frontend/node_modules/
-/frontend/.next/
-/frontend/.env.local
 
 
-/proxy-service/bin/
-/proxy-service/*.exe
-/proxy-service/*.out

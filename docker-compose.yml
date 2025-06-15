@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/var/www/html
+    depends_on:
+      - proxy-manager
+    environment:
+      - PROXY_MANAGER_URL=http://proxy-manager:8080
+
+  proxy-manager:
+    build:
+      context: ./proxy-manager
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./proxy-manager:/app 

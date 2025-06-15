@@ -5,16 +5,90 @@ namespace App\Services;
 use App\Models\Product;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\DomCrawler\Crawler;
 
 class ProductScraperService
 {
     private Client $client;
+    private string $proxyRotatorUrl;
+    private array $userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15',
+    ];
 
     public function __construct(Client $client)
     {
         $this->client = $client;
+        $this->proxyRotatorUrl = env('PROXY_ROTATOR_URL', 'http://localhost:8081');
+    }
+
+    /**
+     * Get a random user agent
+     */
+    private function getRandomUserAgent(): string
+    {
+        return $this->userAgents[array_rand($this->userAgents)];
+    }
+
+    /**
+     * Get next proxy from rotator
+     */
+    private function getNextProxy(): ?array
+    {
+        try {
+            $response = Http::timeout(5)->get("{$this->proxyRotatorUrl}/api/proxy/next");
+            
+            if ($response->successful()) {
+                return $response->json();
+            }
+
+            Log::error('Failed to get proxy from rotator', [
+                'status' => $response->status(),
+                'body' => $response->body()
+            ]);
+
+            return null;
+        } catch (\Exception $e) {
+            Log::error('Error getting proxy', [
+                'error' => $e->getMessage()
+            ]);
+            return null;
+        }
+    }
+
+    /**
+     * Report proxy failure
+     */
+    private function reportProxyFailure(array $proxy): void
+    {
+        try {
+            Http::timeout(5)->post("{$this->proxyRotatorUrl}/api/proxy/failed", $proxy);
+        } catch (\Exception $e) {
+            Log::error('Error reporting proxy failure', [
+                'error' => $e->getMessage(),
+                'proxy' => $proxy
+            ]);
+        }
+    }
+
+    /**
+     * Report proxy success
+     */
+    private function reportProxySuccess(array $proxy): void
+    {
+        try {
+            Http::timeout(5)->post("{$this->proxyRotatorUrl}/api/proxy/success", $proxy);
+        } catch (\Exception $e) {
+            Log::error('Error reporting proxy success', [
+                'error' => $e->getMessage(),
+                'proxy' => $proxy
+            ]);
+        }
     }
 
     /**
@@ -29,14 +103,66 @@ class ProductScraperService
         try {
             Log::info("Starting scraping for URL: {$url}");
 
-            // Add random delay between 2-5 seconds
-            sleep(rand(2, 5));
+            // Add random delay between 5-10 seconds
+            sleep(rand(5, 10));
+
+            // Get next proxy
+            $proxy = $this->getNextProxy();
+            if (!$proxy) {
+                throw new \Exception("No proxies available");
+            }
 
             // Now try to fetch the actual URL
-            $response = $this->client->get($url);
+            $response = $this->client->get($url, [
+                'connect_timeout' => 10,
+                'timeout' => 30,
+                'http_errors' => false,
+                'verify' => false,
+                'proxy' => sprintf(
+                    '%s://%s:%s@%s:%d',
+                    $proxy['protocol'] ?? 'http',
+                    $proxy['username'] ?? '',
+                    $proxy['password'] ?? '',
+                    $proxy['host'],
+                    $proxy['port']
+                ),
+                'headers' => [
+                    'User-Agent' => $this->getRandomUserAgent(),
+                    'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                    'Accept-Language' => 'en-US,en;q=0.9',
+                    'Accept-Encoding' => 'gzip, deflate, br',
+                    'Connection' => 'keep-alive',
+                    'Upgrade-Insecure-Requests' => '1',
+                    'Sec-Fetch-Dest' => 'document',
+                    'Sec-Fetch-Mode' => 'navigate',
+                    'Sec-Fetch-Site' => 'none',
+                    'Sec-Fetch-User' => '?1',
+                    'Cache-Control' => 'max-age=0',
+                    'sec-ch-ua' => '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                    'sec-ch-ua-mobile' => '?0',
+                    'sec-ch-ua-platform' => '"Windows"',
+                    'DNT' => '1',
+                    'Referer' => 'https://www.amazon.com/',
+                ],
+                'allow_redirects' => [
+                    'max' => 5,
+                    'strict' => false,
+                    'referer' => true,
+                    'protocols' => ['http', 'https'],
+                    'track_redirects' => true
+                ],
+            ]);
+
             $statusCode = $response->getStatusCode();
             
+            if ($statusCode === 503) {
+                $this->reportProxyFailure($proxy);
+                Log::error("Amazon blocked the request with 503 Service Unavailable");
+                throw new \Exception("Amazon has temporarily blocked our access. Please try again later.");
+            }
+            
             if ($statusCode !== 200) {
+                $this->reportProxyFailure($proxy);
                 Log::error("Failed to fetch URL. Status code: {$statusCode}");
                 Log::error("Response body: " . (string) $response->getBody());
                 throw new \Exception("Failed to fetch URL. Status code: {$statusCode}");
@@ -53,6 +179,7 @@ class ProductScraperService
                 str_contains($html, 'To discuss automated access to Amazon data') ||
                 str_contains($html, 'Robot Check') ||
                 str_contains($html, 'Sorry, we just need to make sure you')) {
+                $this->reportProxyFailure($proxy);
                 Log::error("Received captcha or anti-bot page");
                 throw new \Exception("Amazon is showing a captcha or anti-bot page. Please try again later.");
             }
@@ -60,15 +187,20 @@ class ProductScraperService
             $products = $this->parseProducts($html, $url);
 
             if (empty($products)) {
+                $this->reportProxyFailure($proxy);
                 Log::warning("No products found for URL: {$url}");
                 Log::warning("HTML content: " . substr($html, 0, 1000) . "...");
                 return [];
             }
 
+            $this->reportProxySuccess($proxy);
             Log::info("Successfully scraped " . count($products) . " products");
             return $products;
 
         } catch (GuzzleException $e) {
+            if (isset($proxy)) {
+                $this->reportProxyFailure($proxy);
+            }
             Log::error('Scraping failed: ' . $e->getMessage());
             throw $e;
         }
