@@ -1,22 +1,25 @@
 # Product Scraper
 
-A web scraping service that fetches product details from eCommerce websites, built with Laravel and Next.js.
+A web scraping service built with Laravel and Next.js, designed to extract product information from eCommerce websites with proxy support and real-time updates.
 
 ## Features
 
-- Scrape product details from eCommerce websites (e.g., Amazon)
-- Store product data in MySQL database
-- Real-time product updates
-- Responsive web interface
-- Proxy rotation for reliable scraping
+- **Amazon Product Scraping**: Extract products from category and search pages
+- **Proxy Integration**: Built-in support for Privoxy proxy rotation
+- **Real-time Updates**: Automatic product refresh every 30 seconds
+- **Responsive UI**: Modern, mobile-friendly interface
+- **Detailed Logging**: Comprehensive logging for debugging
+- **Database Storage**: MySQL storage with efficient indexing
+- **API Support**: RESTful API for integration
 
-## Prerequisites
+## System Requirements
 
 - PHP 8.1 or higher
 - Node.js 18 or higher
 - MySQL 8.0 or higher
 - Composer
 - npm or yarn
+- Privoxy (for proxy support)
 
 ## Project Structure
 
@@ -29,93 +32,175 @@ A web scraping service that fetches product details from eCommerce websites, bui
 ├── frontend/              # Next.js frontend
 │   ├── app/              # Next.js pages
 │   └── components/       # React components
-└── proxy-service/        # Go proxy management service
+├── proxy-rotator/        # Go proxy management service
+└── storage/              # Logs and other storage
 ```
 
-## Setup
+## Installation
 
-### Backend (Laravel)
+### 1. Clone the Repository
+```bash
+git clone <repository-url>
+cd product-scraper
+```
 
-1. Install PHP dependencies:
+### 2. Backend Setup (Laravel)
+
+1. **Install Dependencies**
    ```bash
    composer install
    ```
 
-2. Copy the environment file:
+2. **Environment Setup**
    ```bash
    cp .env.example .env
    ```
 
-3. Generate application key:
-   ```bash
-   php artisan key:generate
-   ```
-
-4. Configure your database in `.env`:
+3. **Configure Database**
+   Edit `.env`:
    ```
    DB_CONNECTION=mysql
    DB_HOST=127.0.0.1
    DB_PORT=3306
    DB_DATABASE=product_scraper
-   DB_USERNAME=your_username
-   DB_PASSWORD=your_password
+   DB_USERNAME=root
+   DB_PASSWORD=
    ```
 
-5. Run migrations:
+4. **Generate Application Key**
+   ```bash
+   php artisan key:generate
+   ```
+
+5. **Run Migrations**
    ```bash
    php artisan migrate
    ```
 
-6. Start the Laravel development server:
+6. **Start Laravel Server**
    ```bash
    php artisan serve
    ```
 
-### Frontend (Next.js)
+### 3. Frontend Setup (Next.js)
 
-1. Navigate to the frontend directory:
+1. **Install Dependencies**
    ```bash
    cd frontend
-   ```
-
-2. Install dependencies:
-   ```bash
    npm install
    ```
 
-3. Start the development server:
+2. **Start Development Server**
    ```bash
    npm run dev
    ```
 
-### Proxy Service (Go)
+### 4. Proxy Setup (Privoxy)
 
-1. Navigate to the proxy service directory:
-   ```bash
-   cd proxy-service
+1. **Install Privoxy**
+   - Windows: Download from [Privoxy website](https://www.privoxy.org/)
+   - Linux: `sudo apt-get install privoxy`
+   - macOS: `brew install privoxy`
+
+2. **Configure Privoxy**
+   Edit `config.txt`:
+   ```
+   listen-address 127.0.0.1:8118
+   forward-socks5 / 127.0.0.1:9050 .
    ```
 
-2. Install Go dependencies:
-   ```bash
-   go mod download
-   ```
-
-3. Start the proxy service:
-   ```bash
-   go run main.go
-   ```
+3. **Start Privoxy**
+   - Windows: Run as service
+   - Linux/macOS: `sudo service privoxy start`
 
 ## Usage
 
-1. Open your browser and navigate to `http://localhost:3000/results`
-2. Enter a product URL (e.g., Amazon product page)
-3. Click "Scrape Products" to fetch and store product details
-4. View the scraped products in the grid layout
-5. Products will automatically refresh every 30 seconds
+1. **Access the Application**
+   - Frontend: `http://localhost:3000`
+   - Backend API: `http://localhost:8000`
 
-## API Endpoints
+2. **Scrape Products**
+   - Enter an Amazon URL (category or search page)
+   - Click "Scrape Products"
+   - View results in the grid layout
 
-- `GET /api/products` - Get all products
-- `POST /api/products/scrape` - Scrape products from a URL
+3. **API Integration**
+   ```bash
+   # Get all products
+   curl http://localhost:8000/api/products
+
+   # Scrape new products
+   curl -X POST http://localhost:8000/api/products/scrape \
+     -H "Content-Type: application/json" \
+     -d '{"url": "https://www.amazon.com/..."}'
+   ```
+
+## Database Schema
+
+### Products Table
+```sql
+CREATE TABLE products (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    price DECIMAL(10,2) NOT NULL,
+    image_url VARCHAR(255) NOT NULL,
+    source_url TEXT,
+    source_website VARCHAR(255),
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Database Connection**
+   - Verify MySQL is running
+   - Check credentials in `.env`
+   - Ensure database exists
+
+2. **Proxy Issues**
+   - Check Privoxy is running (port 8118)
+   - Verify proxy configuration
+   - Check proxy rotator service
+
+3. **Scraping Failures**
+   - Check Laravel logs (`storage/logs/laravel.log`)
+   - Verify URL format
+   - Check proxy status
+
+### Debug Commands
+
+```bash
+# Clear Laravel cache
+php artisan config:clear
+php artisan cache:clear
+
+# Check proxy status
+curl http://localhost:8081/api/proxy/stats
+
+# View Laravel logs
+tail -f storage/logs/laravel.log
+```
+
+## Development
+
+### Code Style
+- Follow PSR-12 standards
+- Use Laravel's coding style guide
+- Write meaningful commit messages
+
+### Testing
+```bash
+# Run PHP tests
+php artisan test
+
+# Run frontend tests
+cd frontend
+npm test
+```
+
+
 
 

@@ -1,119 +1,172 @@
 # Proxy Rotator Service
 
+A proxy rotation service built in Go, designed to work seamlessly with the Product Scraper application.
 
+## Features
 
-## What's Inside?
-
-- Smart Rotation: Automatically switches between proxies
-- Health Checks: Keeps track of which proxies are working
-- Auto-Block: Disables bad proxies after 3 failures
-- Stats: See how your proxies are performing
-- Easy CLI: Manage everything from your terminal
-- Secure: Works with both public and private proxies
+- **Smart Proxy Rotation**: Automatically switches between proxies to avoid rate limiting
+- **Health Monitoring**: Continuous health checks and automatic failure detection
+- **Auto-Recovery**: Automatically reactivates proxies after 5 minutes of inactivity
+- **Failure Tracking**: Disables proxies after 3 consecutive failures
+- **Real-time Stats**: Monitor proxy performance and availability
+- **Secure**: Supports both public and authenticated proxies
+- **RESTful API**: Easy integration with any application
 
 ## Quick Start
 
-1. Start the Service
-```bash
-# Run this in one terminal
-./proxy-rotator.exe
-```
+1. **Build the Service**
+   ```bash
+   # Build the main service
+   go build -o proxy-rotator.exe
+   ```
 
-2. Add Your First Proxy
-```bash
-# Run this in another terminal
-./proxy-manager.exe add 127.0.0.1 8080
-```
+2. **Start the Service**
+   ```bash
+   # Run the service (default port: 8081)
+   ./proxy-rotator.exe
+   ```
 
-3. Check Your Proxies
-```bash
-./proxy-manager.exe list
-```
+3. **Add Your First Proxy**
+   ```bash
+   # Using curl
+   curl -X POST http://localhost:8081/api/proxy/add \
+     -H "Content-Type: application/json" \
+     -d '{
+       "host": "127.0.0.1",
+       "port": 8118,
+       "is_active": true
+     }'
+   ```
 
-That's it! Your proxy rotator is up and running.
-
-## Using the CLI Tool
-
-The CLI tool makes managing proxies super easy:
-
-```bash
-# Add a new proxy
-./proxy-manager.exe add 127.0.0.1 8080
-
-# Add a proxy with username/password
-./proxy-manager.exe add 127.0.0.1 8080 myuser mypass
-
-# See all your proxies
-./proxy-manager.exe list
-
-# Get the next proxy to use
-./proxy-manager.exe next
-
-# Test if a proxy works
-./proxy-manager.exe test 127.0.0.1 8080
-
-# Need help?
-./proxy-manager.exe help
-```
-
-## Using with Laravel
-
-1. Add this to your `.env`:
-```
-PROXY_ROTATOR_URL=http://localhost:8081
-```
-
-2. Use it in your code:
-```php
-$scraper = new ProductScraperService($client);
-$products = $scraper->scrape('https://www.amazon.com/dp/PRODUCT_ID');
-```
-
-The service will automatically:
-- Pick the best proxy
-- Track failures
-- Switch proxies when needed
+4. **Verify Setup**
+   ```bash
+   # Check proxy stats
+   curl http://localhost:8081/api/proxy/stats
+   ```
 
 ## API Endpoints
 
-Need to integrate with something else? Here are the available endpoints:
+### Proxy Management
 
-- GET /api/proxy/next - Get your next proxy
-- POST /api/proxy/add - Add a new proxy
-- GET /api/proxy/list - See all your proxies
-- POST /api/proxy/failed - Tell us a proxy failed
-- POST /api/proxy/success - Tell us a proxy worked
+- `GET /api/proxy/next` - Get next available proxy
+- `POST /api/proxy/add` - Add a new proxy
+- `POST /api/proxy/remove` - Remove a proxy
+- `GET /api/proxy/list` - List all proxies
+- `GET /api/proxy/stats` - Get proxy statistics
+- `POST /api/proxy/test` - Test a proxy's functionality
 
-Example:
+### Health & Monitoring
+
+- `GET /health` - Service health check
+
+## Integration with Laravel
+
+1. **Configure Environment**
+   Add to your Laravel `.env`:
+   ```
+   PROXY_ROTATOR_URL=http://localhost:8081
+   ```
+
+2. **Usage in Code**
+   ```php
+   $scraper = new ProductScraperService($client);
+   $products = $scraper->scrape('https://www.amazon.com/dp/PRODUCT_ID');
+   ```
+
+## Proxy Configuration
+
+### Adding a Proxy
+
 ```bash
-# Add a proxy
 curl -X POST http://localhost:8081/api/proxy/add \
   -H "Content-Type: application/json" \
   -d '{
     "host": "127.0.0.1",
-    "port": 8080,
-    "is_active": true
+    "port": 8118,
+    "is_active": true,
+    "username": "optional_username",
+    "password": "optional_password"
   }'
 ```
 
-## Development
+### Testing a Proxy
 
-Here's what you need:
-
-1. Install Go (version 1.21 or higher)
-2. Clone the repo
-3. Install dependencies:
 ```bash
-go mod tidy
+curl -X POST http://localhost:8081/api/proxy/test \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "127.0.0.1",
+    "port": 8118
+  }'
 ```
 
-4. Build it:
-```bash
-# Build the main service
-go build -o proxy-rotator.exe
+## Development Setup
 
-# Build the CLI tool
-cd cmd/proxy-manager
-go build -o proxy-manager.exe
-```
+1. **Prerequisites**
+   - Go 1.21 or higher
+   - Git
+
+2. **Installation**
+   ```bash
+   # Clone the repository
+   git clone <repository-url>
+   cd proxy-rotator
+
+   # Install dependencies
+   go mod tidy
+   ```
+
+3. **Building**
+   ```bash
+   # Build the service
+   go build -o proxy-rotator.exe
+   ```
+
+## Proxy Health System
+
+The service implements a sophisticated health system:
+
+1. **Failure Detection**
+   - Tracks failed requests per proxy
+   - Disables proxy after 3 consecutive failures
+   - Logs all failures for debugging
+
+2. **Auto-Recovery**
+   - Automatically reactivates proxies after 5 minutes
+   - Resets failure count on successful requests
+   - Maintains proxy rotation even during failures
+
+3. **Performance Monitoring**
+   - Tracks proxy response times
+   - Monitors success/failure rates
+   - Provides real-time statistics
+
+## Troubleshooting
+
+1. **Service Won't Start**
+   - Check if port 8081 is available
+   - Verify Go installation
+   - Check system logs
+
+2. **Proxy Connection Issues**
+   - Verify proxy is running
+   - Check proxy credentials
+   - Test proxy manually
+
+3. **High Failure Rate**
+   - Check proxy health
+   - Verify network connectivity
+   - Review proxy configuration
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
+
+## License
+
+MIT License - See LICENSE file for details
 

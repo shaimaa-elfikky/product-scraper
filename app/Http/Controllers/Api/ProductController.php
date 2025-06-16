@@ -71,7 +71,7 @@ class ProductController extends Controller
                 'max_pages' => $request->max_pages ?? 1
             ]);
 
-            $products = $this->scraperService->scrape($url, $request->max_pages ?? 1);
+            $products = $this->scraperService->scrape($url);
             
             Log::info('Scraping completed', [
                 'total_products' => count($products),
@@ -80,33 +80,66 @@ class ProductController extends Controller
 
             // Save products to database
             $savedCount = 0;
+            $errors = [];
+            
             foreach ($products as $productData) {
                 try {
-                    Log::info('Attempting to save product', ['product_data' => $productData]);
-                    $product = Product::create($productData);
-                    $savedCount++;
-                    Log::info('Product saved successfully', [
-                        'id' => $product->id,
-                        'title' => $product->title
-                    ]);
+                    // Check if product already exists
+                    $existingProduct = Product::where('source_url', $productData['source_url'])->first();
+                    
+                    if ($existingProduct) {
+                        // Update existing product
+                        $existingProduct->update([
+                            'title' => $productData['title'],
+                            'price' => $productData['price'],
+                            'image_url' => $productData['image_url']
+                        ]);
+                        $savedCount++;
+                        Log::info('Product updated successfully', [
+                            'id' => $existingProduct->id,
+                            'title' => $existingProduct->title
+                        ]);
+                    } else {
+                        // Create new product
+                        $product = Product::create([
+                            'title' => $productData['title'],
+                            'price' => $productData['price'],
+                            'image_url' => $productData['image_url'],
+                            'source_url' => $productData['source_url'],
+                            'source_website' => $productData['source_website']
+                        ]);
+                        $savedCount++;
+                        Log::info('Product created successfully', [
+                            'id' => $product->id,
+                            'title' => $product->title
+                        ]);
+                    }
                 } catch (\Exception $e) {
                     Log::error('Failed to save product', [
                         'error' => $e->getMessage(),
                         'product_data' => $productData,
                         'trace' => $e->getTraceAsString()
                     ]);
+                    $errors[] = "Failed to save product: {$productData['title']} - {$e->getMessage()}";
                 }
             }
 
             Log::info('Product saving completed', [
                 'total_attempted' => count($products),
-                'successfully_saved' => $savedCount
+                'successfully_saved' => $savedCount,
+                'errors' => $errors
             ]);
 
-            return response()->json([
+            $response = [
                 'message' => "Successfully scraped and saved {$savedCount} products",
                 'products' => $products
-            ]);
+            ];
+
+            if (!empty($errors)) {
+                $response['errors'] = $errors;
+            }
+
+            return response()->json($response);
         } catch (\Exception $e) {
             Log::error('Scraping failed', [
                 'error' => $e->getMessage(),

@@ -37,12 +37,25 @@ func (pr *ProxyRotator) AddProxy(proxy *Proxy) {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 
-	// Set default active status if not specified
-	if proxy.FailCount == 0 {
-		proxy.IsActive = true
+	// Check if proxy already exists
+	for _, p := range pr.proxies {
+		if p.Host == proxy.Host && p.Port == proxy.Port {
+			log.Printf("Proxy %s:%d already exists, updating...", proxy.Host, proxy.Port)
+			p.Username = proxy.Username
+			p.Password = proxy.Password
+			p.IsActive = true
+			p.FailCount = 0
+			return
+		}
 	}
 
+	// Set default active status
+	proxy.IsActive = true
+	proxy.FailCount = 0
+	proxy.LastUsed = time.Time{}
+
 	pr.proxies = append(pr.proxies, proxy)
+	log.Printf("Added proxy %s:%d (Total: %d)", proxy.Host, proxy.Port, len(pr.proxies))
 }
 
 func (pr *ProxyRotator) RemoveProxy(host string, port int) {
@@ -52,6 +65,7 @@ func (pr *ProxyRotator) RemoveProxy(host string, port int) {
 	for i, proxy := range pr.proxies {
 		if proxy.Host == host && proxy.Port == port {
 			pr.proxies = append(pr.proxies[:i], pr.proxies[i+1:]...)
+			log.Printf("Removed proxy %s:%d (Remaining: %d)", host, port, len(pr.proxies))
 			break
 		}
 	}
@@ -61,6 +75,11 @@ func (pr *ProxyRotator) GetNextProxy() *Proxy {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 
+	if len(pr.proxies) == 0 {
+		log.Println("No proxies configured in rotator")
+		return nil
+	}
+
 	activeProxies := make([]*Proxy, 0)
 	for _, proxy := range pr.proxies {
 		if proxy.IsActive {
@@ -69,13 +88,45 @@ func (pr *ProxyRotator) GetNextProxy() *Proxy {
 	}
 
 	if len(activeProxies) == 0 {
-		return nil
+		log.Printf("No active proxies available (Total: %d, All inactive)", len(pr.proxies))
+		// Try to reactivate proxies that have been inactive for a while
+		pr.reactivateOldProxies()
+		
+		// Check again after reactivation
+		for _, proxy := range pr.proxies {
+			if proxy.IsActive {
+				activeProxies = append(activeProxies, proxy)
+			}
+		}
+		
+		if len(activeProxies) == 0 {
+			return nil
+		}
 	}
 
 	// Randomly select a proxy
 	proxy := activeProxies[rand.Intn(len(activeProxies))]
 	proxy.LastUsed = time.Now()
+	log.Printf("Selected proxy %s:%d (Active: %d/%d)", proxy.Host, proxy.Port, len(activeProxies), len(pr.proxies))
 	return proxy
+}
+
+// Reactivate proxies that have been inactive for more than 5 minutes
+func (pr *ProxyRotator) reactivateOldProxies() {
+	cutoff := time.Now().Add(-5 * time.Minute)
+	reactivated := 0
+	
+	for _, proxy := range pr.proxies {
+		if !proxy.IsActive && (proxy.LastUsed.IsZero() || proxy.LastUsed.Before(cutoff)) {
+			proxy.IsActive = true
+			proxy.FailCount = 0
+			reactivated++
+		}
+	}
+	
+	if reactivated > 0 {
+		log.Printf("Reactivated %d proxies that were inactive for >5 minutes", reactivated)
+	}
 }
 
 func (pr *ProxyRotator) MarkProxyFailed(host string, port int) {
@@ -85,11 +136,12 @@ func (pr *ProxyRotator) MarkProxyFailed(host string, port int) {
 	for _, proxy := range pr.proxies {
 		if proxy.Host == host && proxy.Port == port {
 			proxy.FailCount++
-			// Increase threshold to 5 failures
-			if proxy.FailCount >= 5 {
+			log.Printf("Proxy %s:%d failed (count: %d)", host, port, proxy.FailCount)
+			
+			// Increase threshold to 3 failures (more lenient)
+			if proxy.FailCount >= 3 {
 				proxy.IsActive = false
-				log.Printf("Proxy %s:%d marked as inactive after %d failures",
-					host, port, proxy.FailCount)
+				log.Printf("Proxy %s:%d marked as inactive after %d failures", host, port, proxy.FailCount)
 			}
 			break
 		}
@@ -104,8 +156,32 @@ func (pr *ProxyRotator) ResetFailCount(host string, port int) {
 		if proxy.Host == host && proxy.Port == port {
 			proxy.FailCount = 0
 			proxy.IsActive = true
+			log.Printf("Reset fail count for proxy %s:%d", host, port)
 			break
 		}
+	}
+}
+
+func (pr *ProxyRotator) GetStats() map[string]interface{} {
+	pr.mu.RLock()
+	defer pr.mu.RUnlock()
+
+	total := len(pr.proxies)
+	active := 0
+	inactive := 0
+
+	for _, proxy := range pr.proxies {
+		if proxy.IsActive {
+			active++
+		} else {
+			inactive++
+		}
+	}
+
+	return map[string]interface{}{
+		"total":    total,
+		"active":   active,
+		"inactive": inactive,
 	}
 }
 
@@ -132,31 +208,75 @@ func testProxyWithAuth(proxy *Proxy) error {
 				InsecureSkipVerify: true,
 			},
 		},
-		Timeout: 15 * time.Second, // Reduced timeout
+		Timeout: 10 * time.Second, // Reasonable timeout
 	}
 
-	// Use a more proxy-friendly test URL
-	req, err := http.NewRequest("GET", "http://httpbin.org/ip", nil)
-	if err != nil {
-		return err
+	// Test with multiple URLs for better reliability
+	testURLs := []string{
+		"http://httpbin.org/ip",
+		"http://icanhazip.com",
+		"http://ipecho.net/plain",
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+	var lastErr error
+	for _, testURL := range testURLs {
+		req, err := http.NewRequest("GET", testURL, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("bad status: %d", resp.StatusCode)
+		// Add user agent to avoid blocking
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			return nil // Success
+		}
+		lastErr = fmt.Errorf("bad status: %d", resp.StatusCode)
 	}
 
-	return nil
+	return lastErr
 }
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
 	rotator := NewProxyRotator()
+
+	// Add health check endpoint
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	// Add stats endpoint
+	http.HandleFunc("/api/proxy/stats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		if r.Method != "GET" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		stats := rotator.GetStats()
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(stats)
+	})
 
 	http.HandleFunc("/api/proxy/add", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -176,13 +296,22 @@ func main() {
 
 		var proxy Proxy
 		if err := json.NewDecoder(r.Body).Decode(&proxy); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		// Validate proxy data
+		if proxy.Host == "" || proxy.Port <= 0 {
+			http.Error(w, "Invalid proxy host or port", http.StatusBadRequest)
 			return
 		}
 
 		rotator.AddProxy(&proxy)
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"message": "Proxy added successfully"})
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": "Proxy added successfully",
+			"stats":   rotator.GetStats(),
+		})
 	})
 
 	http.HandleFunc("/api/proxy/remove", func(w http.ResponseWriter, r *http.Request) {
@@ -209,7 +338,10 @@ func main() {
 
 		rotator.RemoveProxy(proxy.Host, proxy.Port)
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"message": "Proxy removed successfully"})
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": "Proxy removed successfully",
+			"stats":   rotator.GetStats(),
+		})
 	})
 
 	http.HandleFunc("/api/proxy/test", func(w http.ResponseWriter, r *http.Request) {
@@ -234,15 +366,25 @@ func main() {
 			return
 		}
 
+		log.Printf("Testing proxy %s:%d", proxy.Host, proxy.Port)
 		if err := testProxyWithAuth(&proxy); err != nil {
 			rotator.MarkProxyFailed(proxy.Host, proxy.Port)
-			http.Error(w, fmt.Sprintf("Proxy test failed: %v", err), http.StatusBadGateway)
+			log.Printf("Proxy test failed for %s:%d: %v", proxy.Host, proxy.Port, err)
+			w.WriteHeader(http.StatusBadGateway)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"message": fmt.Sprintf("Proxy test failed: %v", err),
+				"stats":   rotator.GetStats(),
+			})
 			return
 		}
 
 		rotator.ResetFailCount(proxy.Host, proxy.Port)
+		log.Printf("Proxy test successful for %s:%d", proxy.Host, proxy.Port)
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"message": "Proxy test successful"})
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": "Proxy test successful",
+			"stats":   rotator.GetStats(),
+		})
 	})
 
 	http.HandleFunc("/api/proxy/list", func(w http.ResponseWriter, r *http.Request) {
@@ -269,7 +411,10 @@ func main() {
 		rotator.mu.RUnlock()
 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(proxies)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"proxies": proxies,
+			"stats":   rotator.GetStats(),
+		})
 	})
 
 	http.HandleFunc("/api/proxy/next", func(w http.ResponseWriter, r *http.Request) {
@@ -290,14 +435,33 @@ func main() {
 
 		proxy := rotator.GetNextProxy()
 		if proxy == nil {
-			http.Error(w, "No proxies available", http.StatusServiceUnavailable)
+			stats := rotator.GetStats()
+			log.Printf("No proxies available - Stats: %+v", stats)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "No proxies available",
+				"message": "Please add active proxies to the rotator",
+				"stats":   stats,
+			})
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(proxy)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"proxy": proxy,
+			"stats": rotator.GetStats(),
+		})
 	})
 
 	log.Println("Starting proxy rotator service on :8081")
+	log.Println("Endpoints:")
+	log.Println("  GET  /health - Health check")
+	log.Println("  GET  /api/proxy/stats - Get proxy statistics")
+	log.Println("  POST /api/proxy/add - Add proxy")
+	log.Println("  POST /api/proxy/remove - Remove proxy")
+	log.Println("  POST /api/proxy/test - Test proxy")
+	log.Println("  GET  /api/proxy/list - List all proxies")
+	log.Println("  GET  /api/proxy/next - Get next available proxy")
+	
 	log.Fatal(http.ListenAndServe(":8081", nil))
 }
